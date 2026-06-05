@@ -6,6 +6,8 @@ app.use(express.json());
 
 const KYLAS_API_KEY = '9586b3b9-fc53-4a4b-9a89-721a870d78c9:17063';
 const KYLAS_INCOMING_URL = 'https://call.integrations.kylas.io/api/tata_tele_smart_flo/1305/8d6fa461-169f-45b4-9012-d1c0d5309933/handler/incoming.json';
+const KYLAS_BASE = 'https://api.kylas.io';
+const BUSY_IVR_ID = '83108';
 
 const COACH_ROUTING = {
   'Pooja Verma': '8657128575',
@@ -17,22 +19,29 @@ const COACH_ROUTING = {
   'Demo Account': '7715842331'
 };
 
-app.post('/webhook', async (req, res) => {
+var kylasHeaders = {
+  'api-key': KYLAS_API_KEY,
+  'Content-Type': 'application/json',
+  'Accept': 'application/json'
+};
+
+function normalizePhone(num) {
+  if (!num) return '';
+  return String(num).replace(/^\+?91/, '').replace(/\D/g, '');
+}
+
+app.post('/webhook', async function(req, res) {
   try {
-    let callerNumber = req.body.caller_id_number;
-    const callId = req.body.call_id;
-    const uuid = req.body.uuid;
-    const startStamp = req.body.start_stamp;
-    const callToNumber = req.body.call_to_number;
-    const billingCircle = req.body.billing_circle;
-    const callStatus = req.body.call_status;
-    const direction = req.body.direction;
-    const customerNoWithPrefix = req.body.customer_no_with_prefix;
+    var callerNumber = req.body.caller_id_number;
+    if (!callerNumber) {
+      console.log('No caller number');
+      return res.json([[{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]]);
+    }
+    console.log('Incoming call from:', callerNumber);
+    callerNumber = normalizePhone(callerNumber);
 
-    callerNumber = callerNumber.replace(/^\+?91/, '');
-
-    const response = await axios.post(
-      'https://api.kylas.io/v1/search/deal',
+    var response = await axios.post(
+      KYLAS_BASE + '/v1/search/deal',
       {
         fields: ['name', 'id', 'ownedBy', 'pipeline', 'updatedAt'],
         jsonRule: {
@@ -48,83 +57,71 @@ app.post('/webhook', async (req, res) => {
           valid: true
         }
       },
-      {
-        headers: {
-          'api-key': KYLAS_API_KEY,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache'
-        }
-      }
+      { headers: kylasHeaders, timeout: 5000 }
     );
 
-    const deals = response.data.content;
+    var deals = response.data.content;
     if (!deals || deals.length === 0) {
-      return res.json([]);
+      console.log('No deal found');
+      return res.json([[{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]]);
     }
 
-    const skincoachDeals = deals.filter(deal =>
-      deal.pipeline && deal.pipeline.name &&
-      deal.pipeline.name.toLowerCase().includes('skincoach')
-    );
-
-    const relevantDeals = skincoachDeals.length > 0 ? skincoachDeals : deals;
-
-    const latestDeal = relevantDeals.reduce((latest, deal) => {
+    var skincoachDeals = deals.filter(function(d) {
+      return d.pipeline && d.pipeline.name && d.pipeline.name.toLowerCase().includes('skincoach');
+    });
+    var relevantDeals = skincoachDeals.length > 0 ? skincoachDeals : deals;
+    var latestDeal = relevantDeals.reduce(function(latest, deal) {
       return new Date(deal.updatedAt) > new Date(latest.updatedAt) ? deal : latest;
     });
 
-    const coachName = latestDeal.ownedBy.name;
-    const coachMobile = COACH_ROUTING[coachName];
+    var coachName = latestDeal.ownedBy.name;
+    var coachMobile = COACH_ROUTING[coachName];
 
     if (!coachMobile) {
-      return res.json([]);
+      console.log('Coach not in table:', coachName);
+      return res.json([[{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]]);
     }
 
-    // POST metadata to Kylas incoming.json for screen pop
+    console.log('Routing to', coachName, coachMobile);
+
     try {
       await axios.post(KYLAS_INCOMING_URL, {
-        uuid: uuid,
-        call_to_number: callToNumber,
+        uuid: req.body.uuid,
+        call_to_number: req.body.call_to_number,
         caller_id_number: callerNumber,
-        start_stamp: startStamp,
+        start_stamp: req.body.start_stamp,
         answer_agent_number: '+91' + coachMobile,
-        call_id: callId,
-        billing_circle: billingCircle,
+        call_id: req.body.call_id,
+        billing_circle: req.body.billing_circle,
         call_status: 'Answered',
-        direction: direction,
-        'customer_no_with_prefix ': customerNoWithPrefix
+        direction: req.body.direction,
+        customer_no_with_prefix: req.body.customer_no_with_prefix
       }, {
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         maxRedirects: 0,
-        validateStatus: (status) => status < 500
+        validateStatus: function(s) { return s < 500; },
+        timeout: 3000
       });
-    } catch (kylaserr) {
-      console.log('Kylas screen pop error:', kylaserr.message);
+    } catch (e) {
+      console.log('Screen pop error:', e.message);
     }
 
-    return res.json([{
-      transfer: {
-        type: 'number',
-        data: [coachMobile],
-        ring_type: 'order_by',
-        skip_active: true
-      }
-    }]);
+    return res.json([
+      [{ transfer: { type: 'number', data: [coachMobile], ring_type: 'order_by', skip_active: true } }],
+      [{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]
+    ]);
 
   } catch (err) {
-    return res.json([]);
+    console.log('Webhook error:', err.message);
+    return res.json([[{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]]);
   }
 });
 
-app.get('/', (req, res) => {
-  res.send('Clinderma Webhook Running');
+app.get('/', function(req, res) {
+  res.send('Clinderma Helpline Running');
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+var PORT = process.env.PORT || 3000;
+app.listen(PORT, function() {
+  console.log('Server running on port ' + PORT);
 });
