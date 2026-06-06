@@ -19,7 +19,7 @@ const COACH_ROUTING = {
   'Demo Account': '7715842331'
 };
 
-var kylasHeaders = {
+const kylasHeaders = {
   'api-key': KYLAS_API_KEY,
   'Content-Type': 'application/json',
   'Accept': 'application/json'
@@ -30,17 +30,22 @@ function normalizePhone(num) {
   return String(num).replace(/^\+?91/, '').replace(/\D/g, '');
 }
 
-app.post('/webhook', async function(req, res) {
+// ============================================
+// /webhook — incoming call routing
+// ============================================
+app.post('/webhook', async (req, res) => {
   try {
-    var callerNumber = req.body.caller_id_number;
+    let callerNumber = req.body.caller_id_number;
+
     if (!callerNumber) {
-      console.log('No caller number');
-      return res.json([[{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]]);
+      console.log('No caller number — Busy IVR');
+      return res.json([{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]);
     }
+
     console.log('Incoming call from:', callerNumber);
     callerNumber = normalizePhone(callerNumber);
 
-    var response = await axios.post(
+    const response = await axios.post(
       KYLAS_BASE + '/v1/search/deal',
       {
         fields: ['name', 'id', 'ownedBy', 'pipeline', 'updatedAt'],
@@ -60,13 +65,13 @@ app.post('/webhook', async function(req, res) {
       { headers: kylasHeaders, timeout: 5000 }
     );
 
-    var deals = response.data.content;
+    const deals = response.data.content;
     if (!deals || deals.length === 0) {
-      console.log('No deal found');
-      return res.json([[{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]]);
+      console.log('No deal found — Busy IVR');
+      return res.json([{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]);
     }
 
-    var skincoachDeals = deals.filter(function(d) {
+    const skincoachDeals = deals.filter(function(d) {
       return d.pipeline && d.pipeline.name && d.pipeline.name.toLowerCase().includes('skincoach');
     });
     var relevantDeals = skincoachDeals.length > 0 ? skincoachDeals : deals;
@@ -78,12 +83,13 @@ app.post('/webhook', async function(req, res) {
     var coachMobile = COACH_ROUTING[coachName];
 
     if (!coachMobile) {
-      console.log('Coach not in table:', coachName);
-      return res.json([[{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]]);
+      console.log('Coach "' + coachName + '" not in routing table — Busy IVR');
+      return res.json([{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]);
     }
 
-    console.log('Routing to', coachName, coachMobile);
+    console.log('Routing to ' + coachName + ' (' + coachMobile + ')');
 
+    // Kylas screen pop
     try {
       await axios.post(KYLAS_INCOMING_URL, {
         uuid: req.body.uuid,
@@ -106,17 +112,23 @@ app.post('/webhook', async function(req, res) {
       console.log('Screen pop error:', e.message);
     }
 
-    return res.json([
-      [{ transfer: { type: 'number', data: [coachMobile], ring_type: 'order_by', skip_active: true } }],
-      [{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]
-    ]);
+    // Chained: ring coach, then Busy IVR on no-answer
+    return res.json([{
+      transfer: {
+        type: 'number',
+        data: [coachMobile],
+        ring_type: 'order_by',
+        skip_active: true
+      }
+    }]);
 
   } catch (err) {
     console.log('Webhook error:', err.message);
-    return res.json([[{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]]);
+    return res.json([{ transfer: { type: 'ivr', data: [BUSY_IVR_ID] } }]);
   }
 });
 
+// Health check
 app.get('/', function(req, res) {
   res.send('Clinderma Helpline Running');
 });
