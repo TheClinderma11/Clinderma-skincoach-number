@@ -90,8 +90,9 @@ app.post('/webhook', async (req, res) => {
     console.log('Routing to ' + coachName + ' (' + coachMobile + ')');
 
     // Kylas screen pop
+    // Kylas screen pop
     try {
-      await axios.post(KYLAS_INCOMING_URL, {
+      var screenPopPayload = {
         uuid: req.body.uuid,
         call_to_number: req.body.call_to_number,
         caller_id_number: callerNumber,
@@ -102,12 +103,15 @@ app.post('/webhook', async (req, res) => {
         call_status: 'Answered',
         direction: req.body.direction,
         customer_no_with_prefix: req.body.customer_no_with_prefix
-      }, {
+      };
+      console.log('Screen pop payload:', JSON.stringify(screenPopPayload));
+      var popResponse = await axios.post(KYLAS_INCOMING_URL, screenPopPayload, {
         headers: { 'Content-Type': 'application/json' },
         maxRedirects: 0,
-        validateStatus: function(s) { return s < 500; },
+        validateStatus: function(s) { return true; },
         timeout: 3000
       });
+      console.log('Screen pop response:', popResponse.status, JSON.stringify(popResponse.data));
     } catch (e) {
       console.log('Screen pop error:', e.message);
     }
